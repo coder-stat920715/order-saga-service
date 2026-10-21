@@ -1,0 +1,53 @@
+{
+  "mappings": [
+    {
+      "name": "reject high-risk customer",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPath": "/api/v1/fraud/check",
+        "bodyPatterns": [{ "matchesJsonPath": { "expression": "$.customerId", "equalTo": "fraud-user" } }]
+      },
+      "response": {
+        "status": 200,
+        "headers": { "Content-Type": "application/json" },
+        "jsonBody": { "sagaId": "{{jsonPath request.body '$.sagaId'}}", "decision": "REJECTED", "riskScore": 95, "reason": "High risk score" }
+      }
+    },
+    {
+      "name": "slow upstream (exceeds 3s time limiter)",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPath": "/api/v1/fraud/check",
+        "bodyPatterns": [{ "matchesJsonPath": { "expression": "$.customerId", "equalTo": "slow-user" } }]
+      },
+      "response": {
+        "status": 200,
+        "fixedDelayMilliseconds": 5000,
+        "headers": { "Content-Type": "application/json" },
+        "jsonBody": { "sagaId": "{{jsonPath request.body '$.sagaId'}}", "decision": "APPROVED", "riskScore": 5, "reason": "ok" }
+      }
+    },
+    {
+      "name": "upstream down (opens the circuit breaker)",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPath": "/api/v1/fraud/check",
+        "bodyPatterns": [{ "matchesJsonPath": { "expression": "$.customerId", "equalTo": "down-user" } }]
+      },
+      "response": { "status": 503 }
+    },
+    {
+      "name": "approve everyone else",
+      "priority": 5,
+      "request": { "method": "POST", "urlPath": "/api/v1/fraud/check" },
+      "response": {
+        "status": 200,
+        "headers": { "Content-Type": "application/json" },
+        "jsonBody": { "sagaId": "{{jsonPath request.body '$.sagaId'}}", "decision": "APPROVED", "riskScore": 10, "reason": "ok" }
+      }
+    }
+  ]
+}

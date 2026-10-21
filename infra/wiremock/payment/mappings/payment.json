@@ -1,0 +1,29 @@
+{
+  "mappings": [
+    {
+      "name": "card declined",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPath": "/api/v1/payments",
+        "bodyPatterns": [{ "matchesJsonPath": { "expression": "$.customerId", "equalTo": "decline-user" } }]
+      },
+      "response": { "status": 402 }
+    },
+    {
+      "name": "charge",
+      "priority": 5,
+      "request": { "method": "POST", "urlPath": "/api/v1/payments" },
+      "response": {
+        "status": 201,
+        "headers": { "Content-Type": "application/json" },
+        "jsonBody": { "paymentId": "pay-{{jsonPath request.body '$.sagaId'}}" }
+      }
+    },
+    {
+      "name": "refund (compensation)",
+      "request": { "method": "POST", "urlPathPattern": "/api/v1/payments/.*/refund" },
+      "response": { "status": 200 }
+    }
+  ]
+}

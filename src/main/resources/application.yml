@@ -1,0 +1,162 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: order-saga-service
+
+  # ---------- PostgreSQL (local service state + idempotency records) ----------
+  datasource:
+    url: jdbc:postgresql://localhost:5433/orders
+    username: orders
+    password: orders
+    hikari:
+      maximum-pool-size: 20
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    enabled: true
+
+  # ---------- Temporal ----------
+  temporal:
+    connection:
+      target: localhost:7233
+    namespace: default
+    start-workers: true
+    workers-auto-discovery:
+      packages:
+        - com.example.saga.workflow
+        - com.example.saga.activity
+    workers:
+      - task-queue: ORDER_SAGA_TASK_QUEUE
+        name: order-saga-worker
+        capacity:
+          max-concurrent-workflow-task-executors: 50
+          max-concurrent-activity-executors: 100
+
+  # ---------- Kafka ----------
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      retries: 10
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        delivery.timeout.ms: 30000
+        spring.json.add.type.headers: false
+    consumer:
+      group-id: notification-service
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.value.default.type: com.example.saga.event.OrderCompletedEvent
+        spring.json.trusted.packages: com.example.saga.event
+        isolation.level: read_committed
+    listener:
+      ack-mode: record
+      concurrency: 3
+
+# ---------- Application-specific ----------
+app:
+  saga:
+    task-queue: ORDER_SAGA_TASK_QUEUE
+  kafka:
+    topics:
+      order-completed: order.completed.v1
+  fraud:
+    base-url: http://localhost:8091
+    connect-timeout: 2s
+    read-timeout: 3s
+  inventory:
+    base-url: http://localhost:8092
+  payment:
+    base-url: http://localhost:8093
+
+# ---------- Resilience4j (guards the synchronous fraud API call) ----------
+# Default aspect order: Retry( CircuitBreaker( RateLimiter( TimeLimiter( call )))).
+# Keep Resilience4j retries small: Temporal's activity RetryOptions sit on top of this.
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        register-health-indicator: true
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        minimum-number-of-calls: 10
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 2s
+        slow-call-rate-threshold: 80
+        wait-duration-in-open-state: 20s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+        record-exceptions:
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+          - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.HttpServerErrorException
+        ignore-exceptions:
+          - com.example.saga.fraud.FraudRejectedException
+    instances:
+      fraudCheck:
+        base-config: default
+
+  retry:
+    configs:
+      default:
+        max-attempts: 3
+        wait-duration: 300ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        retry-exceptions:
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+          - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.HttpServerErrorException
+        ignore-exceptions:
+          - com.example.saga.fraud.FraudRejectedException
+          - io.github.resilience4j.circuitbreaker.CallNotPermittedException
+    instances:
+      fraudCheck:
+        base-config: default
+
+  ratelimiter:
+    instances:
+      fraudCheck:
+        limit-for-period: 50
+        limit-refresh-period: 1s
+        timeout-duration: 500ms
+
+  # Requires the guarded method to return CompletableFuture
+  timelimiter:
+    instances:
+      fraudCheck:
+        timeout-duration: 3s
+        cancel-running-future: true
+
+# ---------- Actuator ----------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,circuitbreakers,retries
+  endpoint:
+    health:
+      show-details: always
+  health:
+    circuitbreakers:
+      enabled: true
+
+logging:
+  level:
+    io.temporal: INFO
+    com.example.saga: DEBUG
